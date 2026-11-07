@@ -32,11 +32,11 @@ export async function geocode(address) {
   return {lat:+v.lat,lon:+v.lon,label:v.display_name,countryCode:v.address?.country_code||'',city:v.address?.city||v.address?.town||v.address?.state||''};
 }
 export async function discoverStores(point) {
-  const query=`[out:json][timeout:9];nwr["shop"~"^(supermarket|grocery|convenience)$"](around:2500,${point.lat},${point.lon});out center 60;`;
+  const query=`[out:json][timeout:7];nwr["shop"~"^(supermarket|grocery|convenience)$"](around:2500,${point.lat},${point.lon});out center 60;`;
   let data=null, lastError;
   for(const endpoint of OVERPASS_ENDPOINTS){
     try {
-      const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':ua},body:new URLSearchParams({data:query}).toString(),signal:AbortSignal.timeout(11500)});
+      const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':ua},body:new URLSearchParams({data:query}).toString(),signal:AbortSignal.timeout(7000)});
       if(!response.ok)throw new Error('HTTP '+response.status);
       data=await response.json();break;
     }catch(e){lastError=e;}
@@ -82,8 +82,15 @@ function number(v) {
   if(typeof v==='string')return Number(v.replace(/\s|₽|руб\.?/g,'').replace(',','.'));
   return NaN;
 }
+export function decodeCatalogText(raw) {
+  return String(raw ?? '').replace(/&(?:nbsp|#160|#x0*a0);/gi, ' ')
+    .replace(/&amp;/gi,'&').replace(/&quot;/gi,'"')
+    .replace(/&#(?:39|x27);/gi,"'").replace(/&lt;/gi,'<').replace(/&gt;/gi,'>')
+    .replace(/<[^>]+>/g, ' ').replace(/\s+/g,' ').trim();
+}
 function parseSize(s) {
-  const match = String(s).toLowerCase().replace(/\s/g,' ').match(/(\d+(?:[,.]\d+)?)\s*(кг|г|мл|л|шт)(?=$|[\s,.)])/);
+  const match = decodeCatalogText(s).toLowerCase().match(/(\d+(?:[,.]\d+)?)\s*(кг|г|мл|л|шт)(?=$|[\s,.)])/);
+
   if(!match)return null;
   const count = +match[1].replace(',','.');const unit=match[2];
   return unit==='кг'?{quantity:count*1000,unit:'г'}:unit==='л'?{quantity:count*1000,unit:'мл'}:{quantity:count,unit};
@@ -121,7 +128,7 @@ function scoreName(query,name) {
 
 export function normalizeVV(item,products,allowSubstitutions=true) {
   return products.map((p,idx)=>{
-    const name=String(p.name||p.title||'');
+    const name=decodeCatalogText(p.name||p.title||'');
     const price=number(p.price?.current??p.price?.value??p.price?.price??p.price);
     const sku=String(p.xml_id||p.id||'');
     const score=scoreName(item.query,name);
