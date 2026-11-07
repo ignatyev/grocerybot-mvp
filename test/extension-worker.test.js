@@ -44,3 +44,19 @@ test('worker uses verified VkusVill search URL without needing a visible search 
     assert.ok(stats.injected>0);
   }finally {globalThis.chrome=origChrome;globalThis.fetch=origFetch;}
 });
+
+test('worker reaches verified milk categories in 5ka and Perekrestok without search input',async()=>{
+ const origChrome=globalThis.chrome,origFetch=globalThis.fetch;
+ try{
+   const {bridge,stats}=browserEnvironment();
+   bridge.enqueue({key,providers:['5ka','perekrestok'],items:[{id:'i0',query:'молоко',needed:{quantity:1000,unit:'мл'}}]});
+   const {pollNow}=await import('../extension/background.js?category-test');
+   const result=await pollNow();
+   assert.equal(result.offers,2);
+   assert.deepEqual(stats.updates,[
+     'https://5ka.ru/catalog/moloko--251C51947/',
+     'https://www.perekrestok.ru/cat/c/114/moloko'
+   ]);
+   assert.deepEqual(bridge.status({key}).jobs.map(j=>j.status),['done','done']);
+ }finally {globalThis.chrome=origChrome;globalThis.fetch=origFetch;}
+});
