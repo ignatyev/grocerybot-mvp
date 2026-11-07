@@ -24,7 +24,11 @@ async function request(url, options={}, fetchFn=fetch) {
     headers: {'Accept':options.expectHtml?'text/html,application/xhtml+xml':'application/json',
       'User-Agent':UA, 'Accept-Language':'ru-RU,ru;q=0.9', ...options.headers}
   });
-  if(!res.ok) throw new Error(`${new URL(url).host}: HTTP ${res.status}`);
+  if(!res.ok) {
+    const err=new Error(`${new URL(url).host}: HTTP ${res.status}`);
+    err.code=[401,403,429,451].includes(res.status)?'BROWSER_REQUIRED':'REMOTE_ERROR';
+    throw err;
+  }
   const type=res.headers?.get?.('content-type')||'';
   if(options.expectHtml) {
     const txt=await res.text(); if(txt.length>4_000_000) throw new Error('Слишком большой HTML-ответ');
@@ -50,7 +54,8 @@ function normalized(item, product, storeId, source, fallbackUrl){
     verifiedForAddress:false, catalogOnly:true }));
 }
 function report(provider, offers, errors=[],extra={}){
-  return {provider,status:offers.length?'catalog-only':errors.length?'error':'no-quote',
+  const restricted=errors.some(e=>e.code==='BROWSER_REQUIRED'||/HTTP (?:401|403|429|451)/.test(e.message||''));
+  return {provider,status:offers.length?'catalog-only':restricted?'browser-required':errors.length?'error':'no-quote',
     offers,errors,checkedAt:new Date().toISOString(),checkedDelivery:false,
     note:offers.length?'Публичные цены каталога, не тариф доставки по адресу.':undefined,...extra};
 }
@@ -93,16 +98,17 @@ export async function searchDirectRetailer(id, items, {fetchFn=fetch}={}){
   if(!['magnit','pyaterochka','perekrestok'].includes(id))throw new Error('Unsupported retailer');
   const errors=[];const offers=[];
   const selected=items.slice(0,MAX_ITEMS);
-  for(let start=0;start<selected.length;start+=3){
-    await Promise.all(selected.slice(start,start+3).map(async item=>{
-      try {
-        const url=directSearchURL(id,item.query);
-        const html=await request(url,{expectHtml:true},fetchFn);
-        const candidates=extractJsonLdProducts(html).filter(p=>p.id&&Number.isFinite(asPrice(p.price))&&asPrice(p.price)>0);
-        const best=candidates.flatMap(p=>normalized(item,p,id,`Каталог ${id} (JSON-LD)`,url));
-        offers.push(...best.slice(0,4));
-      }catch(e){errors.push({query:item.query,message:e.message})}
-    }));
+  for(const item of selected){
+    try {
+      const url=directSearchURL(id,item.query);
+      const html=await request(url,{expectHtml:true},fetchFn);
+      const candidates=extractJsonLdProducts(html).filter(p=>p.id&&Number.isFinite(asPrice(p.price))&&asPrice(p.price)>0);
+      const best=candidates.flatMap(p=>normalized(item,p,id,`Каталог ${id} (JSON-LD)`,url));
+      offers.push(...best.slice(0,4));
+    }catch(e){
+      errors.push({query:item.query,message:e.message,code:e.code});
+      if(e.code==='BROWSER_REQUIRED')break; // do not hammer a protected endpoint
+    }
   }
   return report(id,offers,errors,{transport:'public-html-jsonld'});
 }
@@ -146,7 +152,7 @@ export async function searchKuper(items,point,{fetchFn=fetch, maxStores=3}={}){
         if(errors.length>before)break; // do not hammer protected or unavailable endpoints
       }
     }));
-  }catch(e){errors.push({message:e.message})}
+  }catch(e){errors.push({message:e.message,code:e.code})}
   return report('kuper',offers,errors,{stores:seen,transport:'kuper-public-readonly'});
 }
 
@@ -190,7 +196,7 @@ export async function searchYandexEda(items,point,{fetchFn=fetch,maxStores=4}={}
         if(errors.length>before)break;
       }
     }));
-  }catch(e){errors.push({message:e.message})}
+  }catch(e){errors.push({message:e.message,code:e.code})}
   return report('yandex_eda',offers,errors,{stores:found,transport:'yandex-retail-readonly'});
 }
 export const nativeAdapterIds=Object.freeze(['magnit','pyaterochka','perekrestok','kuper','yandex_eda']);
