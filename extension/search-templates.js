@@ -55,3 +55,18 @@ export function learnedSearchUrl(template, query, providerId) {
   }
   return url.toString();
 }
+
+/** True only when the shop URL itself reflects this search. No full URL is sent to GroceryBot. */
+export function searchTermInUrl(rawUrl, query, providerId) {
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== 'https:' || !hostMatches(providerId, url.hostname)) return false;
+    for (const [key, value] of url.searchParams) {
+      const normalized = key.toLowerCase().replace(/[-_]/g, '');
+      if ((SEARCH_KEYS.has(normalized) || normalized.includes('search')) && sameTerm(value, query)) return true;
+    }
+    return url.pathname.split('/').some(segment => {
+      try {return sameTerm(decodeURIComponent(segment), query);} catch {return false;}
+    });
+  } catch {return false;}
+}
