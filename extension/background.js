@@ -38,108 +38,97 @@ async function waitForTab(tabId,ms=18000) {
     chrome.tabs.onUpdated.addListener(listener);
   });
 }
-async function searchDOM(tabId,query){
-  const [result]=await chrome.scripting.executeScript({target:{tabId},func:(term)=>{
-    const fields=[...document.querySelectorAll('input')].filter(e=>{
-      const label=(e.placeholder+' '+e.getAttribute('aria-label')+' '+e.getAttribute('type')).toLowerCase();
-      return e.getClientRects().length && !e.disabled && (e.type==='search'||/поиск|искать|найти|search|товар|продукт/.test(label));
-    });
-    const input=fields[0];
-    if(!input)return {submitted:false,reason:'Не найдено поле поиска. Откройте поиск магазина вручную и нажмите «Считать текущую вкладку».'};
-    input.focus();input.click();
-    const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;
-    if(setter)setter.call(input,term);else input.value=term;
-    input.dispatchEvent(new InputEvent('input',{bubbles:true,data:term,inputType:'insertText'}));
-    input.dispatchEvent(new Event('change',{bubbles:true}));
-    input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
-    input.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
-    if(input.form){try{input.form.requestSubmit();}catch{}}
-    return {submitted:true};
-  },args:[query]});
-  return result?.result||{submitted:false,reason:'Скрипт поиска не завершился'};
+// Inject a packaged DOM helper into the isolated extension world. Does not read cookies or site storage.
+async function pageAction(tabId,action,...args){
+  await chrome.scripting.executeScript({target:{tabId},files:['page-agent.js']});
+  const [result]=await chrome.scripting.executeScript({target:{tabId},
+    func:(name,parameters)=>globalThis.__groceryDomAgent?.[name]?.(...parameters),args:[action,args]});
+  return result?.result||null;
 }
-
-/** Injected function: strictly reads DOM of the current site. No cookies, no localStorage, no arbitrary requests. */
-function extractVisibleCards() {
-  const bodyText=(document.body?.innerText||'').slice(0,4500).toLowerCase();
-  if(/captcha|подтвердите, что вы не робот|доступ ограничен|access denied|forbidden|проверка браузера/.test(bodyText))
-    return {cards:[],blocked:true,reason:'Магазин требует проверку в браузере'};
-  const selectors=[
-    '[itemtype*="schema.org/Product"]','[itemtype*="/Product"]','[data-testid*="product-card"]',
-    '[data-qa*="product-card"]','[class*="ProductCard"]','[class*="product-card"]',
-    'article:has(a[href])','li:has(a[href*="product"])',
-    'a[href*="/product/"]','a[href*="/goods/"]','a[href*="/catalog/"]'
-  ];
-  const nodes=[...new Set(selectors.flatMap(selector=>{
-    try{return [...document.querySelectorAll(selector)].slice(0,120);}catch{return [];}
-  }))].slice(0,180);
-  const cards=[];const fingerprints=new Set();
-  for(const node of nodes){
-    const card=node.matches('a')?(node.closest('article,li,[class*="Card"],[class*="card"]')||node):node;
-    const text=(card.innerText||'').replace(/\s+/g,' ').trim().slice(0,1200);
-    if(text.length<6||text.length>650||!/[₽]|руб/.test(text))continue;
-    const prices=[...text.matchAll(/(\d{1,5}(?:[ \u00a0]\d{3})*(?:[,.]\d{1,2})?)\s*(?:₽|руб(?:лей|\.)?)/gi)]
-      .map(x=>Number(x[1].replace(/[ \u00a0]/g,'').replace(',','.'))).filter(x=>x>0&&x<100000);
-    if(!prices.length)continue;
-    // Seek the price from a dedicated visible element if present; otherwise first listed price.
-    const priceEl=card.querySelector('[data-testid*="price"], [class*="currentPrice"], [class*="CurrentPrice"], [itemprop="price"]');
-    const priceText=priceEl?.getAttribute('content')||priceEl?.innerText||'';
-    const specific=priceText.match(/\d+(?:[ \u00a0]\d{3})*(?:[,.]\d{1,2})?/);
-    const price=(specific?Number(specific[0].replace(/[ \u00a0]/g,'').replace(',','.')):prices[0]);
-    if(!Number.isFinite(price)||price<=0)continue;
-    const link=card.matches('a')?card:card.querySelector('a[href*="/product/"],a[href*="/goods/"],a[href*="/catalog/"],a[href]');
-    const titleEl=card.querySelector('[itemprop="name"], [data-testid*="name"], [class*="ProductName"], [class*="product-title"], h2, h3, h4');
-    let name=(titleEl?.innerText || link?.innerText || text.split(/\d{1,5}(?:[,.]\d+)?\s*₽/)[0]).replace(/\s+/g,' ').trim();
-    if(name.length>180)name=name.slice(0,180);
-    if(name.length<3)continue;
-    let url=null;
-    try {url=link?new URL(link.href,document.location.href).href:null;}catch{}
-    if(!url)url=document.location.href;
-    const fingerprint=name.toLowerCase()+'|'+price;
-    if(fingerprints.has(fingerprint))continue;
-    fingerprints.add(fingerprint);
-    cards.push({name,priceKopecks:Math.round(price*100),url});
-    if(cards.length>=40)break;
+async function capture(tabId){
+  const result=await pageAction(tabId,'scan');
+  return result||{cards:[],reason:'Страница не разрешает чтение результатов'};
+}
+function fingerprint(view){
+  return (view?.cards||[]).slice(0,15).map(x=>x.name+'|'+x.priceKopecks).join('\n');
+}
+const VV_SEARCH='https://vkusvill.ru/search/?q='; // Confirmed public search route.
+const MAX_SCAN_WAIT=10500;
+async function searchOne(tabId,providerId,query){
+  if(providerId==='vkusvill'){
+    await chrome.tabs.update(tabId,{url:VV_SEARCH+encodeURIComponent(query)});
+    await waitForTab(tabId);
+    await sleep(850);
+    const view=await capture(tabId);
+    return {view,confirmed:!view.blocked && view.cards.length>0,
+      reason:view.cards.length?'':'Поиск ВкусВилла не вернул видимых карточек (проверьте вход и адрес)'};
   }
-  return {cards,blocked:false,pageTitle:document.title};
+  const before=await capture(tabId);
+  if(before.blocked)return {view:before,confirmed:false,reason:before.reason};
+  const result=await pageAction(tabId,'search',query);
+  if(!result?.submitted)return {view:before,confirmed:false,reason:result?.reason||'Не найдено поле поиска'};
+  const started=Date.now();let view=before;let confirmed=false;
+  while(Date.now()-started<MAX_SCAN_WAIT){
+    await sleep(850);
+    try {view=await capture(tabId);}catch(e){
+      // React/SPA navigation can unload the frame between search and capture.
+      await waitForTab(tabId,3000);continue;
+    }
+    if(view.blocked)return {view,confirmed:false,reason:view.reason};
+    const oldUrl=before.location||result.url;
+    const newUrl=view.location||'';
+    const changed=fingerprint(view)!==fingerprint(before);
+    const onSearchPage=oldUrl!==newUrl || /(?:search|поиск|найдено|результат)/i.test(view.pageTitle||'');
+    confirmed=view.cards.length>0 && (changed||onSearchPage);
+    if(confirmed)break;
+  }
+  return {view,confirmed,reason:confirmed?'':
+    `Поиск «${query}» не подтвердился: список товаров не обновился. Найдите товар на сайте и считайте открытую вкладку.`};
 }
-async function capture(tabId,query) {
-  await sleep(2200);
-  const [result]=await chrome.scripting.executeScript({target:{tabId},func:extractVisibleCards});
-  return result?.result||{cards:[],reason:'Не удалось прочитать результаты магазина'};
+async function providerTab(providerId){
+  const open=await chrome.tabs.query({});
+  const candidate=open.find(t=>t.url && siteOf(t.url)===providerId && /https:\/\//.test(t.url));
+  return chrome.tabs.create({url:candidate?.url||HOMES[providerId],active:false});
 }
 async function runJob(job){
   if(!Object.hasOwn(HOMES,job.providerId))return {status:'error',offers:[],error:'Сервис не поддерживается расширением'};
-  const tab=await chrome.tabs.create({url:HOMES[job.providerId],active:false});
-  const offers=[];let needsUser=false;let reason='';
+  const tab=await providerTab(job.providerId);
+  const offers=[];const errors=[];
   try {
     await waitForTab(tab.id);
     for(const item of job.items){
-      const search=await searchDOM(tab.id,item.query);
-      if(!search.submitted){needsUser=true;reason=search.reason;break;}
-      const view=await capture(tab.id,item.query);
-      if(view.blocked){needsUser=true;reason=view.reason;break;}
+      const {view,confirmed,reason}=await searchOne(tab.id,job.providerId,item.query);
+      if(view?.blocked){errors.push(reason||view.reason);break;}
+      if(!confirmed){errors.push(reason);continue;}
       const matched=normalizedOffers({providerId:job.providerId,item,cards:view.cards});
-      if(!matched.length){needsUser=true;reason=`Не удалось извлечь цены по «${item.query}»; сайт можно проверить вручную.`;continue;}
+      if(!matched.length){errors.push(`Цены по «${item.query}» не распознаны — откройте результаты поиска вручную.`);continue;}
       offers.push(...matched);
     }
-  }catch(e){needsUser=true;reason=e.message||'Сайт не разрешает чтение страницы';}
+  }catch(e){errors.push(e.message||'Не удалось прочитать страницу');}
   finally {await chrome.tabs.remove(tab.id).catch(()=>{});}
-  return {status:needsUser?'needs-user':'done',offers,error:needsUser?reason:null};
+  return {status:errors.length?'needs-user':'done',offers,error:errors.slice(0,3).join('; ').slice(0,240)||null};
 }
 export async function pollNow(){
   if(running)return {busy:true};
   const key=await getKey();if(!key)return {connected:false};
   running=true;
+  let completed=0,offerCount=0,errors=[];
   try {
     await rpc('connect',{key});
-    const {job}=await rpc('pull',{key});
-    if(!job){await setStatus('Связь работает, заданий пока нет');return {connected:true,job:null};}
-    await setStatus(`Ищем цены: ${job.providerId}`);
-    const found=await runJob(job);
-    const saved=await rpc('complete',{key,jobId:job.id,providerId:job.providerId,...found});
-    await setStatus(`${job.providerId}: передано ${saved.offers||0} цен. ${found.error||''}`);
-    return {connected:true,job:job.providerId,status:found.status,offers:saved.offers};
+    // Drain queued shops immediately instead of processing just one every 30 seconds.
+    for(let n=0;n<6;n++){
+      const {job}=await rpc('pull',{key});
+      if(!job)break;
+      await setStatus(`Поиск ${n+1}/6: ${job.providerId}`);
+      const found=await runJob(job);
+      const saved=await rpc('complete',{key,jobId:job.id,providerId:job.providerId,...found});
+      completed++;offerCount+=(saved.offers||0);
+      if(found.error)errors.push(`${job.providerId}: ${found.error}`);
+      await setStatus(`${job.providerId}: ${saved.offers||0} предложений${found.error?'; '+found.error:''}`);
+    }
+    if(!completed){await setStatus('Связь работает, новых заданий нет');return {connected:true,job:null};}
+    await setStatus(`Проверено ${completed} магазинов, ${offerCount} предложений. ${errors.slice(0,2).join(' | ')}`.slice(0,340));
+    return {connected:true,job:`${completed} магазинов`,status:errors.length?'needs-user':'done',offers:offerCount};
   }catch(e){await setStatus(`Ошибка подключения: ${e.message}`);return {error:e.message};}
   finally {running=false;}
 }
@@ -155,7 +144,7 @@ async function manualCapture(query){
   const chosen=job.items?.find(i=>i.query.toLowerCase()===query.toLowerCase())||job.items?.[0];
   // The job includes product IDs/queries, never site credentials.
   if(!query.trim())throw new Error('Введите название товара, результаты которого видны на странице');
-  const view=await capture(tab.id,query);
+  const view=await capture(tab.id);
   if(view.blocked)throw new Error(view.reason);
   const item={id:chosen?.id||'i0',query};
   const offers=normalizedOffers({providerId,item,cards:view.cards});
