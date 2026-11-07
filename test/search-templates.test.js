@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {learnSearchTemplate,learnedSearchUrl} from '../extension/search-templates.js';
+import {learnSearchTemplate,learnedSearchUrl,searchTermInUrl} from '../extension/search-templates.js';
 
 test('learns site-specific query parameter and substitutes next product',()=>{
   const learned=learnSearchTemplate('https://www.perekrestok.ru/search?query=%D0%BC%D0%BE%D0%BB%D0%BE%D0%BA%D0%BE&ref=utm','молоко','perekrestok');
@@ -20,4 +20,14 @@ test('accepts search terms in URL path and blocks other sites',()=>{
 });
 test('shows actionable message if browser does not expose searched term in URL',()=>{
  assert.throws(()=>learnSearchTemplate('https://kuper.ru/','молоко','kuper'),/Диагностика/);
+});
+
+test('5ka diagnostics text= confirms learned query but not unrelated store/results',()=>{
+  const route=learnSearchTemplate('https://5ka.ru/search/?text=%D0%BC%D0%BE%D0%BB%D0%BE%D0%BA%D0%BE&token=private','молоко','5ka');
+  assert.equal(route,'https://5ka.ru/search/?text=__GROCERYBOT_SEARCH_TERM__');
+  const next=learnedSearchUrl(route,'яйца','5ka');
+  assert.equal(searchTermInUrl(next,'яйца','5ka'),true);
+  assert.equal(searchTermInUrl(next,'молоко','5ka'),false);
+  assert.equal(searchTermInUrl('https://5ka.ru/catalog/moloko--123/','молоко','5ka'),false);
+  assert.equal(searchTermInUrl('https://evil.example/search/?text=яйца','яйца','5ka'),false);
 });
