@@ -31,20 +31,20 @@ function busy(btn,state,msg){btn.disabled=state;btn.textContent=state?msg:btn.da
 for(const id of ['discover','search'])$(id).dataset.label=$(id).textContent;
 function localSave(){localStorage.setItem('groceryMvpState',JSON.stringify({address:$('address').value,list:$('list').value,subs:$('subs').checked,storeFees,manual}));}
 try{const saved=JSON.parse(localStorage.getItem('groceryMvpState')||'{}');$('address').value=saved.address||'';$('list').value=saved.list||'';$('subs').checked=saved.subs!==false;storeFees=saved.storeFees||{};manual=saved.manual||[];}catch{}
-const providerLabel=s=>({ 'address-priced':'Проверены цены и доставка по адресу', 'catalog-only':'Цены каталога; доставка не проверена', 'unavailable':'Доставка по адресу недоступна', 'not-connected':'Нет автоматического адаптера', 'no-quote':'Точная цена не получена', 'error':'Ошибка запроса', 'waiting':'Ожидает проверки' })[s.status]||'Не проверено';
+const providerLabel=s=>({ 'address-priced':'Проверены цены и доставка по адресу', 'catalog-only':'Каталожные цены найдены; доставка не проверена', 'unavailable':'Доставка по адресу недоступна', 'not-connected':'Нет подключённого источника цен', 'no-quote':'Цены автоматически не получены', 'error':'Ошибка запроса', 'waiting':'Ожидает проверки' })[s.status]||'Не проверено';
 function renderProviderStatus(){
   const required=providerStatuses.filter(s=>s.required);
   const unverified=required.filter(s=>s.status!=='address-priced'&&s.status!=='unavailable');
   $('coverage').hidden=false;
   put('coverage',`<b>${required.length-unverified.length} из ${required.length} обязательных сервисов проверены по адресу.</b><div style="margin-top:5px">${unverified.length?'Непроверенные: '+escape(unverified.map(s=>s.name).join(', '))+'.':'Все обязательные сервисы ответили.'} Без проверки всех шести нельзя утверждать, что найден глобальный минимум.</div>`);
-  put('providerStatus',`<h3>Обязательные сервисы</h3>`+required.map(s=>`<div class="provider row between"><b>${escape(s.name)}</b><span class="provider-status ${s.status==='address-priced'?'success':s.status==='error'?'error':'muted'}">${escape(providerLabel(s))}${s.offersCount?' · '+s.offersCount+' предложений':''}</span></div>`).join(''));
+  put('providerStatus',`<h3>Обязательные сервисы</h3>`+required.map(s=>`<div class="provider row between"><b>${escape(s.name)}</b><span class="provider-status ${s.status==='address-priced'?'success':s.status==='error'?'error':'muted'}">${escape(providerLabel(s))}${s.offersCount?' · '+s.offersCount+' предложений':''}${s.error?' · '+escape(s.error.slice(0,95)):''}</span></div>`).join(''));
 }
 $('discover').onclick=async()=>{
   busy($('discover'),true,'Ищем сервисы...');$('discovery').hidden=false;
   put('discovery','<p class="loading small muted">Определяем адрес, ближайшие сети и обязательные сервисы...</p>');
   try{
     const d=await api('/api/discover',{address:$('address').value.trim()});point=d.point;discovered=d.localStores;catalogProviders=d.catalogProviders;
-    const card=s=>`<div class="store row between"><div><b>${escape(s.name)}</b><div class="small muted">${s.nearbyMappedStores?'Точек на карте: '+s.nearbyMappedStores:'Точки рядом не обнаружены'} · ${s.kind==='aggregator'?'Агрегатор':'Магазин'}</div></div><span class="small muted">${s.catalogStatus==='public-catalog'?'Каталог подключён':s.catalogStatus==='connector-configured'?'Адаптер подключён':'Нет адаптера цен'} · <a href="${escape(s.site||'#')}" rel="noopener" target="_blank">сайт</a></span></div>`;
+    const card=s=>`<div class="store row between"><div><b>${escape(s.name)}</b><div class="small muted">${s.nearbyMappedStores?'Точек на карте: '+s.nearbyMappedStores:'Точки рядом не обнаружены'} · ${s.kind==='aggregator'?'Агрегатор':'Магазин'}</div></div><span class="small muted">${s.catalogStatus==='public-catalog'?'Каталог подключён':s.catalogStatus==='connector-configured'?'Адаптер подключён':'Пробуем публичный каталог'} · <a href="${escape(s.site||'#')}" rel="noopener" target="_blank">сайт</a></span></div>`;
     const extras=d.additionalProviders.map(card).join('');
     put('discovery',`<div class="info">Адрес: ${escape(point.label)}<div class="small">Наличие физического магазина ≠ доступность доставки по адресу.</div></div><h3>Обязательные сервисы (${d.requiredProviders.length})</h3>${d.requiredProviders.map(card).join('')||'<span class="small muted">Для этой страны список пока не задан</span>'}<h3>Другие сети поблизости (${d.additionalProviders.length})</h3>${extras||'<span class="small muted">Дополнительные сети не найдены</span>'}${d.warnings.map(w=>`<div class="warning">${escape(w)}</div>`).join('')}`);
     $('manualStores').innerHTML=catalogProviders.map(s=>`<option value="${escape(s.name)}"></option>`).join('');
@@ -57,13 +57,13 @@ function allItems(){return items.map(i=>({...i,offers:[...i.offers,...manual.fil
 function renderItems(){
   put('items',items.map(i=>{
     const best=[...i.offers].sort((a,b)=>(a.priceKopecks*a.packages)-(b.priceKopecks*b.packages))[0];
-    const shop=storeQuotes.find(s=>s.id===best?.storeId)||catalogProviders.find(s=>s.id===best?.storeId);
+    const shop=storeQuotes.find(s=>s.id===best?.storeId)||catalogStores.find(s=>s.id===best?.storeId)||catalogProviders.find(s=>s.id===best?.storeId);
     return `<div class="item"><div class="flex"><div class="itemname">${escape(i.raw)}</div>${best?`<div class="detail">${escape(best.name)}</div>${best.unitWarning?'<div class="detail error">Фасовка не проверена — уточните перед заказом</div>':''}${best.url?`<a class="link" href="${escape(best.url)}" target="_blank" rel="noopener">Открыть карточку ↗</a>`:''}`:'<div class="detail error">Позиция не найдена</div>'}</div><div class="price">${best?rub(best.priceKopecks*best.packages):'—'}<div class="detail">${best?escape(shop?.name||best.storeId)+' × '+best.packages:'нет цены'}</div></div></div>`
   }).join('')||'<p class="muted small">Товары пока не найдены.</p>');renderShipping();renderManual();
 }
 function storeList(){
   const present=new Map();
-  for(const i of items)for(const o of i.offers){const matched=storeQuotes.find(s=>s.id===o.storeId)||catalogProviders.find(s=>s.id===o.storeId);present.set(o.storeId,{id:o.storeId,name:matched?.name||o.storeId,quoteVerified:matched?.quoteVerified===true});}
+  for(const i of items)for(const o of i.offers){const matched=storeQuotes.find(s=>s.id===o.storeId)||catalogStores.find(s=>s.id===o.storeId)||catalogProviders.find(s=>s.id===o.storeId);present.set(o.storeId,{id:o.storeId,name:matched?.name||o.storeId,quoteVerified:matched?.quoteVerified===true});}
   for(const o of manual){const matched=catalogProviders.find(s=>s.id===o.storeId);present.set(o.storeId,{id:o.storeId,name:matched?.name||o.storeName});}
   return [...present.values()];
 }
@@ -71,11 +71,11 @@ function renderShipping(){put('shipping',storeList().map(s=>{const f=storeFees[s
 function renderManual(){put('manualOffers',manual.length?manual.map(m=>`<div class="store row between"><span>${escape(m.storeName)} · ${escape(m.name)} · ${rub(m.priceKopecks)}</span><button class="secondary" data-remove="${escape(m.sku)}" style="padding:4px 8px">×</button></div>`).join(''):'Добавленных вручную товаров пока нет.');document.querySelectorAll('[data-remove]').forEach(el=>el.onclick=()=>{manual=manual.filter(m=>m.sku!==el.dataset.remove);renderItems();localSave();});}
 $('search').onclick=async()=>{
   if(!$('list').value.trim())return toast('Введите список продуктов');if(!point)return toast('Сначала нажмите «Найти сервисы по адресу»');
-  busy($('search'),true,'Ищем товары...');put('searchMsg','Проверяем каталог ВкусВилла и все подключённые адаптеры магазинов.');
+  busy($('search'),true,'Ищем товары...');put('searchMsg','Проверяем ВкусВилл, публичные каталоги сетей, Купер и Яндекс Еду. Наличие и доставка проверяются отдельно.');
   try{
     const d=await api('/api/search',{list:$('list').value,allowSubstitutions:$('subs').checked,countryCode:point?.countryCode||'ru',
       address:$('address').value.trim(),point,localStores:discovered});
-    items=d.items;providerStatuses=d.providers;storeQuotes=d.quotes;
+    items=d.items;providerStatuses=d.providers;storeQuotes=d.quotes;catalogStores=d.catalogStores||[];
     for(const quote of storeQuotes){if(!storeFees[quote.id])storeFees[quote.id]={delivery:String(quote.deliveryKopecks/100),freeFrom:quote.freeDeliveryFromKopecks==null?'':String(quote.freeDeliveryFromKopecks/100)};}
     renderItems();renderProviderStatus();
     put('searchDesc',`Найдено ${items.filter(i=>i.offers.length).length} из ${items.length} позиций. <b>Полное сравнение ${d.coverage.completeMarketComparison?'потенциально доступно':'пока невозможно'}: не все сети имеют проверенные цены по адресу.</b>`);
