@@ -20,7 +20,7 @@ export function optimize(items, stores, {maxDeliveries=2,minSplitSavingsKopecks=
   const configured = new Map(stores.map(s => [s.id, s]));
   const filtered = items.map(item => ({...item, offers: (item.offers || []).filter(o =>
     configured.has(o.storeId) && Number.isInteger(o.priceKopecks) && o.priceKopecks >= 0 &&
-    (allowSubstitutions || o.exactMatch) && o.matchScore >= 0.42
+    (allowSubstitutions || o.exactMatch) && o.unitWarning!==true && o.matchScore >= 0.42
   )}));
   const missing = filtered.filter(i => !i.offers.length).map(i => i.query);
   if (missing.length || !filtered.length) return {status:'INCOMPLETE', missing, bestSingle:null,bestSplit:null,selected:null};
