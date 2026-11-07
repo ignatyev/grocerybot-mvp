@@ -21,7 +21,7 @@
 <div id="overlay"><div class="modal"><h3>Добавить цену из другого магазина</h3><div class="field"><label>Магазин</label><input id="manualName" list="manualStores" placeholder="Например, Магнит"><datalist id="manualStores"></datalist></div><div class="field"><label>Для какой позиции</label><select id="manualItem"></select></div><div class="manualGrid"><div class="field"><label>Цена за позицию, ₽</label><input id="manualPrice" type="number" min="0" step="0.01" placeholder="129.90"></div><div class="field"><label>Доставка, ₽</label><input id="manualShipping" type="number" min="0" step="0.01" placeholder="Указать обязательно"></div></div><div class="field"><label>Ссылка на товар (необязательно)</label><input id="manualUrl" placeholder="https://..."></div><div class="row" style="justify-content:flex-end"><button id="cancelManual" class="secondary">Отмена</button><button id="saveManual" class="primary">Добавить</button></div></div></div>
 <div id="toast"></div>
 <script>
-const $=id=>document.getElementById(id);let items=[],point=null,manual=[],discovered=[],catalogProviders=[],providerStatuses=[],storeQuotes=[];let storeFees={};
+const $=id=>document.getElementById(id);let items=[],point=null,manual=[],discovered=[],catalogProviders=[],providerStatuses=[],storeQuotes=[],catalogStores=[];let storeFees={};
 const rub=kp=>(kp/100).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+' ₽';
 const escape=s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
 function toast(s){$('toast').textContent=s;$('toast').style.display='block';setTimeout(()=>$('toast').style.display='none',4000)}
