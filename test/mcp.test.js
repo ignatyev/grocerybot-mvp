@@ -11,6 +11,7 @@ test('MCP adapter parses real-style nested JSON-RPC search response', async () =
       assert.equal(url,'https://mcp.vkusvill.ru/mcp');
       const rpc=JSON.parse(opts.body);
       assert.equal(rpc.params.name,'vkusvill_products_search');
+      assert.ok(rpc.params.arguments.limit <= 10);
       return response({items:[{id:1248,xml_id:1248,name:'Молоко 1 л',price:{current:119.90},rating:{average:4.8}}]});
     };
     const offers=await searchVV({id:'i0',query:'молоко',needed:{quantity:2000,unit:'мл'}});
