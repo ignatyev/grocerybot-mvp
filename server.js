@@ -7,14 +7,17 @@ import {optimize} from './optimizer.js';
 import {buildServiceCatalog} from './store-registry.js';
 import {configuredAdapters,callAdapter,initialProviderStatuses,coverageSummary} from './provider-connectors.js';
 import {nativeAdapterIds,runNativeAdapter} from './native-adapters.js';
+import {createBridge} from './bridge.js';
 const dir=path.dirname(fileURLToPath(import.meta.url));
 const html=fs.readFileSync(path.join(dir,'public/index.html'));
 const PORT=Number(process.env.PORT||3000);
 const cache=new Map();
 const rate=new Map();
+const bridgeRate=new Map();
+const bridge=createBridge();
 function send(res,status,obj){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(obj));}
 async function body(req){
-  let s='';for await(const chunk of req){s+=chunk.toString();if(s.length>32000)throw new Error('Запрос слишком большой');}
+  let s='';for await(const chunk of req){s+=chunk.toString();if(s.length>85000)throw new Error('Запрос слишком большой');}
   return JSON.parse(s||'{}');
 }
 async function once(key,ttl,fn){
@@ -22,6 +25,7 @@ async function once(key,ttl,fn){
   const value=await fn();cache.set(key,{value,expiry:Date.now()+ttl});if(cache.size>500)cache.delete(cache.keys().next().value);return value;
 }
 function allow(ip){const now=Date.now();const p=rate.get(ip)||{count:0,until:now+60000};if(now>p.until){p.count=0;p.until=now+60000;}p.count++;rate.set(ip,p);return p.count<=18;}
+function allowBridge(ip){const t=Date.now();let p=bridgeRate.get(ip);if(!p||p.until<t)p={count:0,until:t+60000};p.count++;bridgeRate.set(ip,p);if(bridgeRate.size>5000)bridgeRate.clear();return p.count<=80;}
 export async function searchCatalogs({list,address='',point=null,countryCode='ru',allowSubstitutions=true,localStores=[]},deps={}){
   const lines=String(list||'').split(/\r?\n/).map(parseLine).filter(Boolean).slice(0,12);
   if(!lines.length)throw new Error('Укажите хотя бы один товар');
@@ -102,7 +106,30 @@ async function handle(req,res){
   if(req.method==='GET'&&pathname==='/'){
     res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'public, max-age=60'});res.end(html);return;
   }
-  if(req.method==='GET'&&pathname==='/health')return send(res,200,{ok:true,version:'0.3.1'});
+  if(req.method==='GET'&&pathname==='/health')return send(res,200,{ok:true,version:'0.4.0'});
+  if(pathname.startsWith('/api/bridge/')) {
+    // A temporary secret shared only by the website and extension authorizes the room.
+    // CORS is required for chrome-extension:// origins; no browser cookies are used.
+    res.setHeader('Access-Control-Allow-Origin','*');
+    res.setHeader('Access-Control-Allow-Methods','POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers','Content-Type');
+    res.setHeader('Cache-Control','no-store');
+    if(req.method==='OPTIONS'){res.writeHead(204);res.end();return;}
+    if(req.method!=='POST')return send(res,405,{error:'Только POST'});
+    if(!allowBridge(req.socket.remoteAddress||'unknown'))return send(res,429,{error:'Слишком много запросов'});
+    const data=await body(req);
+    const actions={
+      '/api/bridge/open':bridge.open,
+      '/api/bridge/connect':bridge.connect,
+      '/api/bridge/queue':bridge.enqueue,
+      '/api/bridge/pull':bridge.pull,
+      '/api/bridge/complete':bridge.complete,
+      '/api/bridge/status':bridge.status,
+      '/api/bridge/close':bridge.close
+    };
+    const fn=actions[pathname];
+    return fn?send(res,200,fn(data)):send(res,404,{error:'Не найдено'});
+  }
   if(req.method!=='POST')return send(res,404,{error:'Не найдено'});
   const ip=req.socket.remoteAddress||'unknown';if(!allow(ip))return send(res,429,{error:'Слишком много запросов; повторите через минуту'});
   const data=await body(req);
@@ -138,5 +165,5 @@ async function handle(req,res){
   if(pathname==='/api/cart/vkusvill')return send(res,200,{link:await vvBasketLink(Array.isArray(data.items)?data.items:[])});
   send(res,404,{error:'Не найдено'});
 }
-export function createServer(){return http.createServer((req,res)=>handle(req,res).catch(e=>send(res,400,{error:e.message||'Неизвестная ошибка'})));}
+export function createServer(){return http.createServer((req,res)=>handle(req,res).catch(e=>send(res,e.status||400,{error:e.message||'Неизвестная ошибка'})));}
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))createServer().listen(PORT,'0.0.0.0',()=>console.log(`GroceryBot MVP http://0.0.0.0:${PORT}`));

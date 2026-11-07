@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "GroceryBot — цены из моего Chrome",
+  "version": "0.4.0",
+  "description": "Считывает видимые цены продуктов из выбранных магазинов и передаёт только предложения в ваш GroceryBot. Без cookies, паролей и оформления покупок.",
+  "permissions": ["tabs", "scripting", "storage", "alarms"],
+  "host_permissions": [
+    "https://grocerybot-web-production.up.railway.app/*",
+    "https://magnit.ru/*", "https://*.magnit.ru/*",
+    "https://5ka.ru/*", "https://*.5ka.ru/*",
+    "https://perekrestok.ru/*", "https://*.perekrestok.ru/*",
+    "https://vkusvill.ru/*", "https://*.vkusvill.ru/*",
+    "https://kuper.ru/*", "https://*.kuper.ru/*",
+    "https://eda.yandex.ru/*"
+  ],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "action": {"default_popup": "popup.html"}
+}
