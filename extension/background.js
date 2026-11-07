@@ -1,5 +1,5 @@
-import {normalizedOffers} from './offer-matching.js';
-import {learnSearchTemplate,learnedSearchUrl} from './search-templates.js';
+import {normalizedOffers,relevance} from './offer-matching.js';
+import {learnSearchTemplate,learnedSearchUrl,searchTermInUrl} from './search-templates.js';
 
 const BASE='https://grocerybot-web-production.up.railway.app';
 const HOMES={
@@ -46,8 +46,8 @@ async function pageAction(tabId,action,...args){
     func:(name,parameters)=>globalThis.__groceryDomAgent?.[name]?.(...parameters),args:[action,args]});
   return result?.result||null;
 }
-async function capture(tabId){
-  const result=await pageAction(tabId,'scan');
+async function capture(tabId,query=''){
+  const result=await pageAction(tabId,'scan',query);
   return result||{cards:[],reason:'Страница не разрешает чтение результатов'};
 }
 function fingerprint(view){
@@ -65,7 +65,16 @@ function categoryFallback(providerId,query){
   const category=/^молок(?:о|а|у|ом)?(?:\s|$)/.test(q)?'moloko':null;
   return category?CATEGORY_FALLBACKS[providerId]?.[category]||null:null;
 }
-const MAX_SCAN_WAIT=10500;
+const MAX_SCAN_WAIT=14000;
+function relevantCards(view,query){
+  return (view?.cards||[]).some(card=>relevance(query,card.name)>=0.42);
+}
+// An SPA can render featured products while the search route is still loading.
+// A search is verified only when the page reflects the request AND a relevant offer appears.
+function verifiedSearch(view,query,providerId){
+  const reflectsTerm=searchTermInUrl(view?.location||'',query,providerId)||view?.queryInSearchInput===true;
+  return !!(reflectsTerm && relevantCards(view,query));
+}
 async function searchOne(tabId,providerId,query){
   const templates=(await chrome.storage.local.get('learnedSearchTemplates')).learnedSearchTemplates||{};
   if(templates[providerId]) {
@@ -74,23 +83,36 @@ async function searchOne(tabId,providerId,query){
       await chrome.tabs.update(tabId,{url});
       await waitForTab(tabId);
       let view={cards:[]};
-      for(let i=0;i<7;i++){
-        await sleep(600);
-        view=await capture(tabId);
+      for(let i=0;i<15;i++){
+        await sleep(650);
+        view=await capture(tabId,query);
         if(view.blocked) return {view,confirmed:false,reason:view.reason};
-        if(view.cards?.length)break;
+        if(verifiedSearch(view,query,providerId))return {view,confirmed:true,reason:''};
       }
-      if(view.cards?.length)return {view,confirmed:true,reason:''};
-      // Do not silently substitute unrelated products from the home page.
-      return {view,confirmed:false,reason:'Обученный поиск открылся, но карточки не появились. Проверьте адрес доставки на сайте.'};
+      // 5ka uses a Chakra search input: on some pages it needs to be submitted
+      // after navigation, even if the URL already contains ?text=.
+      if(providerId==='5ka') {
+        const submitted=await pageAction(tabId,'search',query);
+        if(submitted?.submitted){
+          for(let i=0;i<12;i++){
+            await sleep(650);
+            view=await capture(tabId,query);
+            if(view.blocked)return {view,confirmed:false,reason:view.reason};
+            if(verifiedSearch(view,query,providerId))return {view,confirmed:true,reason:''};
+          }
+        }
+      }
+      return {view,confirmed:false,reason: view.cards?.length
+        ? 'Страница открылась, но не подтвердила результаты для «'+query+'». Проверьте выбранный адрес и выполните поиск вручную.'
+        : 'Поисковый URL открылся, но карточки товаров не появились. Проверьте адрес и вход в магазин.'};
     } catch(e) {return {view:{cards:[]},confirmed:false,reason:'Обученный поиск не удался: '+e.message};}
   }
   if(providerId==='vkusvill'){
     await chrome.tabs.update(tabId,{url:VV_SEARCH+encodeURIComponent(query)});
     await waitForTab(tabId);
     await sleep(850);
-    const view=await capture(tabId);
-    return {view,confirmed:!view.blocked && view.cards.length>0,
+    const view=await capture(tabId,query);
+    return {view,confirmed:!view.blocked && verifiedSearch(view,query,providerId),
       reason:view.cards.length?'':'Поиск ВкусВилла не вернул видимых карточек (проверьте вход и адрес)'};
   }
   const categoryUrl=categoryFallback(providerId,query);
@@ -98,19 +120,19 @@ async function searchOne(tabId,providerId,query){
     await chrome.tabs.update(tabId,{url:categoryUrl});
     await waitForTab(tabId);
     await sleep(850);
-    const candidate=await capture(tabId);
-    if(candidate.cards?.length) return {view:candidate,confirmed:!candidate.blocked,
+    const candidate=await capture(tabId,query);
+    if(relevantCards(candidate,query)) return {view:candidate,confirmed:!candidate.blocked,
       reason:candidate.blocked?candidate.reason:'Каталог категории (не проверенный поиск по произвольному названию)'};
     // If the category is empty or unavailable, try the site's own search UI.
   }
-  const before=await capture(tabId);
+  const before=await capture(tabId,query);
   if(before.blocked)return {view:before,confirmed:false,reason:before.reason};
   const result=await pageAction(tabId,'search',query);
   if(!result?.submitted)return {view:before,confirmed:false,reason:result?.reason||'Не найдено поле поиска'};
   const started=Date.now();let view=before;let confirmed=false;
   while(Date.now()-started<MAX_SCAN_WAIT){
     await sleep(850);
-    try {view=await capture(tabId);}catch(e){
+    try {view=await capture(tabId,query);}catch(e){
       // React/SPA navigation can unload the frame between search and capture.
       await waitForTab(tabId,3000);continue;
     }
@@ -119,7 +141,7 @@ async function searchOne(tabId,providerId,query){
     const newUrl=view.location||'';
     const changed=fingerprint(view)!==fingerprint(before);
     const onSearchPage=oldUrl!==newUrl || /(?:search|поиск|найдено|результат)/i.test(view.pageTitle||'');
-    confirmed=view.cards.length>0 && (changed||onSearchPage);
+    confirmed=verifiedSearch(view,query,providerId) && (changed||onSearchPage||view.queryInSearchInput);
     if(confirmed)break;
   }
   return {view,confirmed,reason:confirmed?'':
@@ -208,7 +230,7 @@ async function manualCapture(query){
   const chosen=job.items?.find(i=>i.query.toLowerCase()===query.toLowerCase())||job.items?.[0];
   // The job includes product IDs/queries, never site credentials.
   if(!query.trim())throw new Error('Введите название товара, результаты которого видны на странице');
-  const view=await capture(tab.id);
+  const view=await capture(tab.id,query);
   if(view.blocked)throw new Error(view.reason);
   const item={id:chosen?.id||'i0',query};
   const offers=normalizedOffers({providerId,item,cards:view.cards});
