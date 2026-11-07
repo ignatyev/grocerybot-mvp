@@ -53,6 +53,17 @@ function fingerprint(view){
   return (view?.cards||[]).slice(0,15).map(x=>x.name+'|'+x.priceKopecks).join('\n');
 }
 const VV_SEARCH='https://vkusvill.ru/search/?q='; // Confirmed public search route.
+// Verified public category pages. They are category fallbacks, not general search URLs.
+const CATEGORY_FALLBACKS={
+  magnit:{moloko:'https://magnit.ru/catalog/117673-molochnyy_prilavok_2'},
+  '5ka':{moloko:'https://5ka.ru/catalog/moloko--251C51947/'},
+  perekrestok:{moloko:'https://www.perekrestok.ru/cat/c/114/moloko'}
+};
+function categoryFallback(providerId,query){
+  const q=query.toLowerCase().trim().replace(/ё/g,'е');
+  const category=/^молок(?:о|а|у|ом)?(?:\s|$)/.test(q)?'moloko':null;
+  return category?CATEGORY_FALLBACKS[providerId]?.[category]||null:null;
+}
 const MAX_SCAN_WAIT=10500;
 async function searchOne(tabId,providerId,query){
   if(providerId==='vkusvill'){
@@ -62,6 +73,16 @@ async function searchOne(tabId,providerId,query){
     const view=await capture(tabId);
     return {view,confirmed:!view.blocked && view.cards.length>0,
       reason:view.cards.length?'':'Поиск ВкусВилла не вернул видимых карточек (проверьте вход и адрес)'};
+  }
+  const categoryUrl=categoryFallback(providerId,query);
+  if(categoryUrl){
+    await chrome.tabs.update(tabId,{url:categoryUrl});
+    await waitForTab(tabId);
+    await sleep(850);
+    const candidate=await capture(tabId);
+    if(candidate.cards?.length) return {view:candidate,confirmed:!candidate.blocked,
+      reason:candidate.blocked?candidate.reason:'Каталог категории (не проверенный поиск по произвольному названию)'};
+    // If the category is empty or unavailable, try the site's own search UI.
   }
   const before=await capture(tabId);
   if(before.blocked)return {view:before,confirmed:false,reason:before.reason};
