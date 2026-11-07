@@ -28,7 +28,7 @@ export async function searchCatalogs({list,address='',point=null,countryCode='ru
   const adapters=deps.adapters||configuredAdapters();
   const builtins=deps.nativeAdapterIds||nativeAdapterIds;
   const connectedIds=[...new Set([...Object.keys(adapters),...(isRussianCountry(countryCode)?builtins:[])])];
-  const catalog=buildServiceCatalog({countryCode,localStores,connectedIds});
+  const catalog=buildServiceCatalog({countryCode,localStores,connectedIds:Object.keys(adapters),nativeIds:builtins});
   const providerStatuses=initialProviderStatuses(catalog,connectedIds);
   const statusMap=new Map(providerStatuses.map(s=>[s.id,s]));
   const results=lines.map(item=>({...item,offers:[]}));
@@ -102,19 +102,19 @@ async function handle(req,res){
   if(req.method==='GET'&&pathname==='/'){
     res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'public, max-age=60'});res.end(html);return;
   }
-  if(req.method==='GET'&&pathname==='/health')return send(res,200,{ok:true,version:'0.3.0'});
+  if(req.method==='GET'&&pathname==='/health')return send(res,200,{ok:true,version:'0.3.1'});
   if(req.method!=='POST')return send(res,404,{error:'Не найдено'});
   const ip=req.socket.remoteAddress||'unknown';if(!allow(ip))return send(res,429,{error:'Слишком много запросов; повторите через минуту'});
   const data=await body(req);
   if(pathname==='/api/discover'){
     const address=String(data.address||'').trim();
     const point=await once('geo:'+address,1000*60*60,()=>geocode(address));
-    let localStores=[],warnings=[];
+    let localStores=[],warnings=[],discoveryComplete=true;
     try{localStores=await once('shops:'+point.lat+':'+point.lon,1000*60*30,()=>discoverStores(point));}
-    catch(e){warnings.push('Поиск соседних магазинов временно недоступен: '+e.message);}
-    const catalog=buildServiceCatalog({countryCode:point.countryCode,localStores,connectedIds:[...Object.keys(configuredAdapters()),...nativeAdapterIds]});
+    catch(e){discoveryComplete=false;warnings.push('Не удалось проверить расположение соседних магазинов: '+e.message);}
+    const catalog=buildServiceCatalog({countryCode:point.countryCode,localStores,connectedIds:Object.keys(configuredAdapters()),nativeIds:nativeAdapterIds});
     return send(res,200,{point,localStores,catalogProviders:catalog.all,requiredProviders:catalog.required,
-      additionalProviders:catalog.additional,requiredIds:catalog.requiredIds,warnings,deliveryVerified:false,
+      additionalProviders:catalog.additional,requiredIds:catalog.requiredIds,warnings,discoveryComplete,deliveryVerified:false,
       note:'Все шесть обязательных сервисов включены независимо от наличия соседнего магазина; адресная доставка пока не подтверждена.'});
   }
   if(pathname==='/api/search'){
