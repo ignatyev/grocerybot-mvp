@@ -167,5 +167,25 @@
     }
     return {cards,blocked:false,pageTitle:document.title,location:location.href};
   }
-  globalThis.__groceryDomAgent={search,scan,parsePrice,cleanupName,probe:()=>({hasInput:!!findInput(),hasOpener:!!findOpener(),location:location.href})};
+  function probe(){
+    // Shape of interactive elements only. Never collect filled inputs, full URLs, body text or cookies.
+    const fields=all('input, [role="searchbox"], [contenteditable="true"]').filter(x=>visible(x)).slice(0,16);
+    const buttons=all('button, [role="button"], [aria-label], a[title]').filter(x=>visible(x));
+    const searchCandidates=buttons.filter(x=>SEARCH_WORDS.test(openerLabel(x))).slice(0,14);
+    const safeAttr=(node,key)=>trim(node.getAttribute?.(key)||'')
+      .replace(/[\w.+-]+@[\w.-]+/g,'[email]').replace(/\b\d{5,}\b/g,'[id]').slice(0,90);
+    const descriptor=node=>({
+      tag:node.tagName.toLowerCase(),type:safeAttr(node,'type'),role:safeAttr(node,'role'),
+      ariaLabel:safeAttr(node,'aria-label'),placeholder:safeAttr(node,'placeholder'),
+      name:safeAttr(node,'name'),testId:safeAttr(node,'data-testid'),
+      classTokens:trim(typeof node.className==='string'?node.className:'').split(' ').filter(x=>/search|input|field|header|icon|find|поиск|поиск/i.test(x)).slice(0,4).map(x=>x.slice(0,55))
+    });
+    return {hasInput:!!findInput(),hasOpener:!!findOpener(),visibleInputs:fields.map(descriptor),
+      searchControls:searchCandidates.map(descriptor),frameCount:document.querySelectorAll('iframe').length,
+      visibleCards:scan().cards.length,blocked:scan().blocked,hostname:location.hostname,
+      searchParameterNames:[...new URL(location.href).searchParams.keys()].slice(0,10),
+      // Deliberately no path, query values, document title or DOM text.
+      version:2};
+  }
+  globalThis.__groceryDomAgent={search,scan,parsePrice,cleanupName,probe};
 })();
