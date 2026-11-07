@@ -142,9 +142,13 @@
     ];
     return [...new Set(selectors.flatMap(s=>{try{return all(s).slice(0,180)}catch{return []}}))].slice(0,240);
   }
-  function scan() {
+  function scan(expectedQuery = '') {
+    // Report only a boolean, never the actual typed value. This validates SPA search state.
+    const searchInput = expectedQuery ? findInput() : null;
+    const normalized = text => trim(text).normalize('NFKC').toLocaleLowerCase('ru');
+    const queryInSearchInput = !!(searchInput && normalized(searchInput.value || searchInput.textContent) === normalized(expectedQuery));
     const bodyText=(document.body?.innerText||'').slice(0,2000);
-    if(/captcha|подтвердите, что вы не робот|access denied|forbidden|проверка браузера/i.test(bodyText))return {cards:[],blocked:true,reason:'Магазин требует проверку браузера'};
+    if(/captcha|подтвердите, что вы не робот|access denied|forbidden|проверка браузера/i.test(bodyText))return {cards:[],blocked:true,queryInSearchInput:false,reason:'Магазин требует проверку браузера'};
     const cards=[],seen=new Set();
     for(const n of candidateCards()) {
       const card=n.matches('a')?(n.closest('article,li,[data-testid*="product"],[class*="ProductCard"],[class*="product-card"]')||n):n;
@@ -165,7 +169,7 @@
       const fingerprint=(name+'|'+price).toLowerCase();if(seen.has(fingerprint))continue;seen.add(fingerprint);
       cards.push({name,priceKopecks:price,url});if(cards.length>=50)break;
     }
-    return {cards,blocked:false,pageTitle:document.title,location:location.href};
+    return {cards,blocked:false,queryInSearchInput,pageTitle:document.title,location:location.href};
   }
   function probe(){
     // Shape of interactive elements only. Never collect filled inputs, full URLs, body text or cookies.
