@@ -14,3 +14,9 @@ test('package parsing for cyrillic units',()=>{assert.deepEqual(parseLine('мо�
 test('disable substitutions when not exact',()=>{const r=optimize([{id:'1',query:'сыр',offers:[{storeId:'a',sku:'1',name:'тофу',priceKopecks:100,packages:1,matchScore:.6,exactMatch:false}]}],[{id:'a',name:'A',deliveryKopecks:0}],{allowSubstitutions:false});assert.equal(r.status,'INCOMPLETE');});
 test('free shipping threshold',()=>{const r=optimize([{id:'1',query:'молоко',offers:[{storeId:'a',sku:'1',name:'молоко',priceKopecks:160000,packages:1,matchScore:1,exactMatch:true}]}],[{id:'a',name:'A',deliveryKopecks:9000,freeDeliveryFromKopecks:150000}]);assert.equal(r.selected.totalKopecks,160000)});
 test('Russian inflection in product matching',()=>{const offers=normalizeVV({id:'i0',query:'яйца',needed:{quantity:10,unit:'шт'}},[{id:77,name:'Яйцо куриное С1, 10 шт',price:{current:119}}]);assert.equal(offers[0].packages,1)});
+
+test('unknown pack size cannot satisfy a requested quantity in exact optimization',()=>{
+ const r=optimize([{id:'1',query:'молоко 2 л',offers:[{storeId:'a',sku:'1',name:'молоко',priceKopecks:9300,packages:1,matchScore:1,unitWarning:true}]}],
+   [{id:'a',name:'A',deliveryKopecks:0}]);
+ assert.equal(r.status,'INCOMPLETE');
+});
