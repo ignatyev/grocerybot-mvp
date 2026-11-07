@@ -1,7 +1,7 @@
 /** External public sources. No credentials and no fabricated shipping or stock data. */
 const VV = 'https://mcp.vkusvill.ru/mcp';
 const GEO = 'https://nominatim.openstreetmap.org/search';
-const OVERPASS = 'https://overpass-api.de/api/interpreter';
+const OVERPASS_ENDPOINTS = ['https://overpass.kumi.systems/api/interpreter','https://overpass-api.de/api/interpreter'];
 const ua = process.env.GROCERYBOT_USER_AGENT || 'GroceryBotMVP/0.1 (experimental personal project; OpenStreetMap geocoding)';
 const timeout = (ms) => AbortSignal.timeout(ms);
 // Nominatim public API policy: cap this process to about one lookup per second.
@@ -32,8 +32,16 @@ export async function geocode(address) {
   return {lat:+v.lat,lon:+v.lon,label:v.display_name,countryCode:v.address?.country_code||'',city:v.address?.city||v.address?.town||v.address?.state||''};
 }
 export async function discoverStores(point) {
-  const query=`[out:json][timeout:15];(nwr["shop"~"^(supermarket|grocery|convenience)$"](around:5000,${point.lat},${point.lon}););out center 100;`;
-  const data=await jsonFetch(OVERPASS,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({data:query}).toString()});
+  const query=`[out:json][timeout:9];nwr["shop"~"^(supermarket|grocery|convenience)$"](around:2500,${point.lat},${point.lon});out center 60;`;
+  let data=null, lastError;
+  for(const endpoint of OVERPASS_ENDPOINTS){
+    try {
+      const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':ua},body:new URLSearchParams({data:query}).toString(),signal:AbortSignal.timeout(11500)});
+      if(!response.ok)throw new Error('HTTP '+response.status);
+      data=await response.json();break;
+    }catch(e){lastError=e;}
+  }
+  if(!data)throw new Error('Все источники карт недоступны: '+lastError?.message);
   const uniq=new Map();
   for (const element of data.elements || []) {
     const name=(element.tags?.name||element.tags?.brand||'').trim();
@@ -130,8 +138,8 @@ export function normalizeVV(item,products,allowSubstitutions=true) {
   }).filter(Boolean).sort((a,b)=> (b.matchScore-a.matchScore)|| (a.priceKopecks*a.packages-b.priceKopecks*b.packages)).slice(0,5);
 }
 export async function searchVV(item,allowSubstitutions=true) {
-  const result=await vvCall('vkusvill_products_search',{q:item.query,mode:'full',limit:12,page:1,sort:'popularity',vvonly:0});
-  const products=Array.isArray(result)?result:result.items||result.products||result.result?.items||[];
+  const result=await vvCall('vkusvill_products_search',{q:item.query,mode:'full',limit:10,page:1,sort:'popularity',vvonly:0});
+  const products=Array.isArray(result)?result:result.items||result.products||result.data?.products||result.data?.items||result.result?.items||result.result?.products||[];
   if(!Array.isArray(products))throw new Error('ВкусВилл: нет массива товаров в ответе');
   return normalizeVV(item,products,allowSubstitutions);
 }
