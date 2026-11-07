@@ -68,7 +68,7 @@ test('search orchestrator touches all configured providers, preserving statuses'
   const adapters={magnit:{url:'https://adapter.example/magnit'},yandex_eda:{url:'https://adapter.example/eda'}};
   const seen=[];
   const data=await searchCatalogs({list:'молоко 1 л',address:'Россия, Сочи, Навагинская 9',countryCode:'ru'}, {
-    adapters,
+    adapters, nativeAdapterIds:[],
     searchVV:async()=>[{storeId:'vkusvill',sku:'1',name:'Молоко',priceKopecks:15900,packages:1,matchScore:1}],
     callAdapter:async(id)=>{seen.push(id);return {stores:[{id,quoteVerified:true,deliveryKopecks:9900}],offers:[{storeId:id,requestedId:'i0',sku:'123',name:'Молоко',priceKopecks:10000,packages:1,matchScore:1}],availability:'verified',checkedAt:new Date().toISOString()};}
   });
