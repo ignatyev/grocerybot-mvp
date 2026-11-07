@@ -33,3 +33,12 @@ test('MCP basket link uses product IDs and quantity',async()=>{
  assert.equal(link,'https://vkusvill.ru/?share_basket=test');
  }finally{globalThis.fetch=original;}
 });
+
+test('VkusVill decodes HTML entities and recognises litre packaging',async()=>{
+ const {normalizeVV}=await import('../adapters.js');
+ const offers=normalizeVV({id:'i0',query:'молоко',needed:{quantity:2000,unit:'мл'}},[{id:777,name:'Молоко 3,2%, 1&nbsp;л',price:93}]);
+ assert.equal(offers.length,1);
+ assert.equal(offers[0].name,'Молоко 3,2%, 1 л');
+ assert.equal(offers[0].packages,2);
+ assert.equal(offers[0].unitWarning,false);
+});
