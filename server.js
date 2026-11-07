@@ -6,6 +6,7 @@ import {geocode,discoverStores,parseLine,searchVV,vvBasketLink} from './adapters
 import {optimize} from './optimizer.js';
 import {buildServiceCatalog} from './store-registry.js';
 import {configuredAdapters,callAdapter,initialProviderStatuses,coverageSummary} from './provider-connectors.js';
+import {nativeAdapterIds,runNativeAdapter} from './native-adapters.js';
 const dir=path.dirname(fileURLToPath(import.meta.url));
 const html=fs.readFileSync(path.join(dir,'public/index.html'));
 const PORT=Number(process.env.PORT||3000);
@@ -25,13 +26,16 @@ export async function searchCatalogs({list,address='',point=null,countryCode='ru
   const lines=String(list||'').split(/\r?\n/).map(parseLine).filter(Boolean).slice(0,12);
   if(!lines.length)throw new Error('Укажите хотя бы один товар');
   const adapters=deps.adapters||configuredAdapters();
-  const catalog=buildServiceCatalog({countryCode,localStores,connectedIds:Object.keys(adapters)});
-  const providerStatuses=initialProviderStatuses(catalog,Object.keys(adapters));
+  const builtins=deps.nativeAdapterIds||nativeAdapterIds;
+  const connectedIds=[...new Set([...Object.keys(adapters),...(isRussianCountry(countryCode)?builtins:[])])];
+  const catalog=buildServiceCatalog({countryCode,localStores,connectedIds});
+  const providerStatuses=initialProviderStatuses(catalog,connectedIds);
   const statusMap=new Map(providerStatuses.map(s=>[s.id,s]));
   const results=lines.map(item=>({...item,offers:[]}));
   const errors=[];
   const checkedStores=[];
-  const isRussian=String(countryCode).toLowerCase()==='ru';
+  const catalogStores=[];
+  const isRussian=isRussianCountry(countryCode);
   // VkusVill public MCP provides real catalog products, but not verified address checkout pricing.
   if(isRussian && !adapters.vkusvill){
     const status=statusMap.get('vkusvill');
@@ -51,6 +55,29 @@ export async function searchCatalogs({list,address='',point=null,countryCode='ru
       status.verifiedDelivery=false;
     }
   }
+  const nativeCall=deps.runNativeAdapter||runNativeAdapter;
+  const nativeTasks=catalog.all.filter(s=>isRussian && builtins.includes(s.id) && !adapters[s.id]).map(async store=>{
+    const state=statusMap.get(store.id);
+    try{
+      const out=await once('native:'+store.id+':'+point?.lat+':'+point?.lon+':'+lines.map(x=>x.query).join('|'),
+        1000*60*4,()=>nativeCall(store.id,{items:lines,point,address,allowSubstitutions}));
+      catalogStores.push(...(out.stores||[]));
+      for(const o of out.offers||[]){
+        const item=results.find(i=>i.id===o.requestedId);
+        if(item)item.offers.push(o);
+      }
+      state.offersCount=(out.offers||[]).length;
+      state.status=out.status||'no-quote';
+      state.verifiedDelivery=false;
+      state.checkedAt=out.checkedAt;
+      state.source=out.transport||'native';
+      state.note=out.note||'';
+      if(out.errors?.length){
+        state.error=out.errors[0].message;
+        errors.push({storeId:store.id,message:out.errors[0].message,failedQueries:out.errors.length});
+      }
+    }catch(e){state.status='error';state.error=e.message;errors.push({storeId:store.id,message:e.message});}
+  });
   const adapterCall=deps.callAdapter||callAdapter;
   const tasks=catalog.all.filter(s=>adapters[s.id]).map(async store=>{
     const state=statusMap.get(store.id);
@@ -64,17 +91,18 @@ export async function searchCatalogs({list,address='',point=null,countryCode='ru
       state.checkedAt=out.checkedAt;
     }catch(e){state.status='error';state.error=e.message;errors.push({storeId:store.id,message:e.message});}
   });
-  await Promise.all(tasks);
-  return {items:results,providers:providerStatuses,quotes:checkedStores,coverage:coverageSummary(providerStatuses),errors,
-    source:'ВкусВилл MCP + подключённые адаптеры',deliveryChecked:checkedStores.length>0,
+  await Promise.all([...nativeTasks,...tasks]);
+  return {items:results,providers:providerStatuses,quotes:checkedStores,catalogStores,coverage:coverageSummary(providerStatuses),errors,
+    source:'ВкусВилл MCP + публичные read-only каталоги + подключённые адаптеры',deliveryChecked:checkedStores.length>0,
     note:'Публичный каталог не подтверждает наличие и цену доставки. Без проверки всех обязательных сервисов рейтинг является предварительным.'};
 }
+function isRussianCountry(code){return String(code).toLowerCase()==='ru'}
 async function handle(req,res){
   const pathname=new URL(req.url||'/',`http://localhost:${PORT}`).pathname;
   if(req.method==='GET'&&pathname==='/'){
     res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'public, max-age=60'});res.end(html);return;
   }
-  if(req.method==='GET'&&pathname==='/health')return send(res,200,{ok:true,version:'0.2.0'});
+  if(req.method==='GET'&&pathname==='/health')return send(res,200,{ok:true,version:'0.3.0'});
   if(req.method!=='POST')return send(res,404,{error:'Не найдено'});
   const ip=req.socket.remoteAddress||'unknown';if(!allow(ip))return send(res,429,{error:'Слишком много запросов; повторите через минуту'});
   const data=await body(req);
@@ -84,7 +112,7 @@ async function handle(req,res){
     let localStores=[],warnings=[];
     try{localStores=await once('shops:'+point.lat+':'+point.lon,1000*60*30,()=>discoverStores(point));}
     catch(e){warnings.push('Поиск соседних магазинов временно недоступен: '+e.message);}
-    const catalog=buildServiceCatalog({countryCode:point.countryCode,localStores,connectedIds:Object.keys(configuredAdapters())});
+    const catalog=buildServiceCatalog({countryCode:point.countryCode,localStores,connectedIds:[...Object.keys(configuredAdapters()),...nativeAdapterIds]});
     return send(res,200,{point,localStores,catalogProviders:catalog.all,requiredProviders:catalog.required,
       additionalProviders:catalog.additional,requiredIds:catalog.requiredIds,warnings,deliveryVerified:false,
       note:'Все шесть обязательных сервисов включены независимо от наличия соседнего магазина; адресная доставка пока не подтверждена.'});
