@@ -31,9 +31,10 @@ export function canonicalId(name){
  * OSM only verifies a physical store is mapped nearby. It does NOT verify home delivery.
  * Aggregators are always included separately from the shops they aggregate.
  */
-export function buildServiceCatalog({countryCode='ru',localStores=[],connectedIds=[]}={}){
+export function buildServiceCatalog({countryCode='ru',localStores=[],connectedIds=[],nativeIds=[]}={}){
   if(String(countryCode).toLowerCase()!=='ru')return {required:[],additional:[],all:[],requiredIds:[]};
   const connected=new Set(connectedIds);
+  const native=new Set(nativeIds);
   const byBrand=new Map();
   const unknown=new Map();
   for(const s of localStores){
@@ -45,7 +46,7 @@ export function buildServiceCatalog({countryCode='ru',localStores=[],connectedId
   }
   const create=(s,required)=>({id:s.id,name:s.name,site:s.site,kind:s.kind||'retailer',required,
     nearbyMappedStores:byBrand.get(s.id)||0,
-    catalogStatus:connected.has(s.id)?'connector-configured':s.id==='vkusvill'?'public-catalog':'not-connected',
+    catalogStatus:connected.has(s.id)?'connector-configured':s.id==='vkusvill'?'public-catalog':native.has(s.id)?'experimental':'not-connected',
     deliveryStatus:'unverified'});
   const required=REQUIRED_RU.map(s=>create(s,true));
   const additional=OTHER_CHAINS.filter(s=>byBrand.has(s.id)||connected.has(s.id)).map(s=>create(s,false));
