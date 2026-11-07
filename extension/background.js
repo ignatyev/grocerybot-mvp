@@ -1,4 +1,5 @@
 import {normalizedOffers} from './offer-matching.js';
+import {learnSearchTemplate,learnedSearchUrl} from './search-templates.js';
 
 const BASE='https://grocerybot-web-production.up.railway.app';
 const HOMES={
@@ -66,6 +67,24 @@ function categoryFallback(providerId,query){
 }
 const MAX_SCAN_WAIT=10500;
 async function searchOne(tabId,providerId,query){
+  const templates=(await chrome.storage.local.get('learnedSearchTemplates')).learnedSearchTemplates||{};
+  if(templates[providerId]) {
+    try {
+      const url=learnedSearchUrl(templates[providerId],query,providerId);
+      await chrome.tabs.update(tabId,{url});
+      await waitForTab(tabId);
+      let view={cards:[]};
+      for(let i=0;i<7;i++){
+        await sleep(600);
+        view=await capture(tabId);
+        if(view.blocked) return {view,confirmed:false,reason:view.reason};
+        if(view.cards?.length)break;
+      }
+      if(view.cards?.length)return {view,confirmed:true,reason:''};
+      // Do not silently substitute unrelated products from the home page.
+      return {view,confirmed:false,reason:'Обученный поиск открылся, но карточки не появились. Проверьте адрес доставки на сайте.'};
+    } catch(e) {return {view:{cards:[]},confirmed:false,reason:'Обученный поиск не удался: '+e.message};}
+  }
   if(providerId==='vkusvill'){
     await chrome.tabs.update(tabId,{url:VV_SEARCH+encodeURIComponent(query)});
     await waitForTab(tabId);
@@ -154,6 +173,30 @@ export async function pollNow(){
   finally {running=false;}
 }
 
+async function activeStoreTab(){
+  const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
+  const providerId=siteOf(tab?.url);
+  if(!providerId)throw new Error('Сначала откройте страницу поддерживаемого магазина в Chrome');
+  return {tab,providerId};
+}
+async function learnCurrentSearch(query){
+  const {tab,providerId}=await activeStoreTab();
+  const template=learnSearchTemplate(tab.url,query,providerId);
+  const existing=(await chrome.storage.local.get('learnedSearchTemplates')).learnedSearchTemplates||{};
+  await chrome.storage.local.set({learnedSearchTemplates:{...existing,[providerId]:template}});
+  await setStatus(`Запомнил адрес поиска: ${providerId}. Следующие задания будут использовать его.`);
+  return {providerId,learned:true};
+}
+async function diagnoseCurrentTab(){
+  const {tab,providerId}=await activeStoreTab();
+  let probe;
+  try {probe=await pageAction(tab.id,'probe');}
+  catch(e) {probe={injectionError:String(e.message||e).slice(0,130)};}
+  const report={format:'grocerybot-chrome-diagnostics-v1',providerId,extensionVersion:chrome.runtime.getManifest?.().version||'unknown',
+    probe:probe||{},learnedTemplate:!!((await chrome.storage.local.get('learnedSearchTemplates')).learnedSearchTemplates||{})[providerId]};
+  // Never include cookies, localStorage, input values, full URLs, addresses or page body text.
+  return {report};
+}
 async function manualCapture(query){
   const key=await getKey();if(!key)throw new Error('Сначала подключите расширение к GroceryBot');
   const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
@@ -179,7 +222,7 @@ chrome.runtime.onInstalled.addListener(()=>chrome.alarms.create('grocerybot-poll
 chrome.runtime.onStartup.addListener(()=>chrome.alarms.create('grocerybot-poll',{periodInMinutes:.5}));
 chrome.alarms.onAlarm.addListener(alarm=>{if(alarm.name==='grocerybot-poll')void pollNow()});
 chrome.runtime.onMessage.addListener((msg,_sender,respond)=>{
-  if(!['CONNECT','DISCONNECT','POLL','STATUS','MANUAL_CAPTURE'].includes(msg.type))return false;
+  if(!['CONNECT','DISCONNECT','POLL','STATUS','MANUAL_CAPTURE','LEARN_SEARCH','DIAGNOSE'].includes(msg.type))return false;
   (async()=>{
     if(msg.type==='CONNECT'){
       if(!/^[a-f0-9]{48,64}$/.test(msg.key))throw new Error('Скопируйте код из сайта GroceryBot целиком');
@@ -195,6 +238,8 @@ chrome.runtime.onMessage.addListener((msg,_sender,respond)=>{
     }
     if(msg.type==='POLL')return await pollNow();
     if(msg.type==='MANUAL_CAPTURE')return await manualCapture(String(msg.query||''));
+    if(msg.type==='LEARN_SEARCH')return await learnCurrentSearch(String(msg.query||''));
+    if(msg.type==='DIAGNOSE')return await diagnoseCurrentTab();
     const key=await getKey();const stored=await chrome.storage.local.get(['lastStatus','lastRun']);
     return {connected:!!key,lastStatus:stored.lastStatus||'Нет заданий',lastRun:stored.lastRun||0};
   })().then(respond,e=>respond({error:e.message||String(e)}));
