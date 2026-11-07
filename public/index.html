@@ -14,7 +14,7 @@
 <div class="steps"><span class="step active">Макс. 2 доставки</span><span class="step active">Экономия от 300 ₽</span><span class="step">Скорость не учитываем</span></div>
 <div style="margin-top:23px"><button id="search" class="primary">Проверить цены доступных каталогов →</button></div><div id="searchMsg" style="margin-top:12px" class="small muted"></div>
 <div class="bridge-panel"><h3 style="margin:0 0 8px">🔌 Поиск цен через мой Chrome</h3>
-<p class="small muted">Магазины, которые блокируют серверный поиск, можно проверить в твоём браузере с существующим входом. Нужно расширение Chrome v0.6.0. Открыть сайт магазина недостаточно — поиск выполняется через расширение.</p>
+<p class="small muted">Магазины, которые блокируют серверный поиск, можно проверить в твоём браузере с существующим входом. Нужно расширение Chrome v0.6.1. Если оно сопряжено, поиск в Chrome запускается автоматически после поиска каталогов. Один лишь открытый сайт магазина не передаёт цены.</p>
 <div class="small" style="margin:8px 0"><a target="_blank" rel="noopener" href="https://github.com/ignatyev/grocerybot-mvp/archive/refs/heads/main.zip">Скачать исходники расширения (ZIP)</a> · <a target="_blank" rel="noopener" href="https://github.com/ignatyev/grocerybot-mvp/blob/main/extension/README.md">Инструкция установки</a></div>
 <div class="bridge-actions"><button id="pairChrome" class="secondary">1. Создать код</button><button id="copyBridge" class="secondary" hidden>Скопировать код</button></div>
 <code class="bridge-code" id="pairCode" hidden></code><div id="bridgeState" class="small muted">Сопряжение не создано</div>
@@ -38,7 +38,7 @@ function busy(btn,state,msg){btn.disabled=state;btn.textContent=state?msg:btn.da
 for(const id of ['discover','search'])$(id).dataset.label=$(id).textContent;
 function localSave(){localStorage.setItem('groceryMvpState',JSON.stringify({address:$('address').value,list:$('list').value,subs:$('subs').checked,storeFees,manual}));}
 try{const saved=JSON.parse(localStorage.getItem('groceryMvpState')||'{}');$('address').value=saved.address||'';$('list').value=saved.list||'';$('subs').checked=saved.subs!==false;storeFees=saved.storeFees||{};manual=saved.manual||[];}catch{}
-const providerLabel=s=>({ 'browser-priced':'Цены считаны из Chrome; доставка не проверена', 'browser-pending':'Chrome проверяет магазин', 'browser-needs-search':'Нужен поиск вручную в Chrome', 'browser-error':'Ошибка чтения Chrome', 'address-priced':'Проверены цены и доставка по адресу', 'catalog-only':'Каталожные цены найдены; доставка не проверена', 'unavailable':'Доставка по адресу недоступна', 'not-connected':'Нет подключённого источника цен', 'no-quote':'Цены автоматически не получены', 'browser-required':'Серверный доступ ограничен · откройте магазин в браузере', 'error':'Ошибка запроса', 'waiting':'Ожидает проверки' })[s.status]||'Не проверено';
+const providerLabel=s=>({ 'browser-priced':'Цены считаны из Chrome; доставка не проверена', 'browser-pending':'Chrome проверяет магазин', 'browser-needs-search':'Нужен поиск вручную в Chrome', 'browser-error':'Ошибка чтения Chrome', 'address-priced':'Проверены цены и доставка по адресу', 'catalog-only':'Каталожные цены найдены; доставка не проверена', 'unavailable':'Доставка по адресу недоступна', 'not-connected':'Нет подключённого источника цен', 'no-quote':'Цены автоматически не получены', 'browser-required':'Серверный доступ заблокирован (403) · требуется поиск через расширение Chrome', 'error':'Ошибка запроса', 'waiting':'Ожидает проверки' })[s.status]||'Не проверено';
 function renderProviderStatus(){
   const required=providerStatuses.filter(s=>s.required);
   const unverified=required.filter(s=>s.status!=='address-priced'&&s.status!=='unavailable');
@@ -87,7 +87,11 @@ $('search').onclick=async()=>{
     renderItems();renderProviderStatus();
     put('searchDesc',`Найдено ${items.filter(i=>i.offers.length).length} из ${items.length} позиций. <b>Полное сравнение ${d.coverage.completeMarketComparison?'потенциально доступно':'пока невозможно'}: не все сети имеют проверенные цены по адресу.</b>`);
     put('searchMsg',d.errors.length?`<span class="error">Ошибки: ${escape(d.errors.map(x=>[x.storeId,x.query,x.message].filter(Boolean).join(': ')).join('; '))}</span>`:'<span class="success">✓ Поиск по доступным каталогам завершён. Уточните стоимость доставки.</span>');
-    toast('Поиск завершён');showBridgeCode();localSave();
+    toast('Поиск каталогов завершён');showBridgeCode();localSave();
+    // A paired browser is a second price source, not a side effect of opening a shop tab.
+    // Queue it automatically after the catalog search so 403 providers do not stay
+    // indefinitely in an untested state.
+    if(bridgeKey) await queueChromeSearch({automatic:true});
   }catch(e){put('searchMsg',`<span class="error">${escape(e.message)}</span>`)}finally{busy($('search'),false)}
 };
 // Browser bridge: key is generated locally and shared with the installed Chrome extension.
@@ -108,18 +112,44 @@ $('copyBridge').onclick=async()=>{if(!bridgeKey)return;
   try{await navigator.clipboard.writeText(bridgeKey);toast('Код скопирован');}
   catch{toast('Выдели код и скопируй вручную')}
 };
-$('searchChrome').onclick=async()=>{
-  if(!bridgeKey)return toast('Сначала создай код');
-  if(!items.length)return toast('Сначала найди товары обычным поиском');
+async function queueChromeSearch({automatic=false}={}){
+  if(!bridgeKey)return false;
+  if(!items.length)return false;
   $('searchChrome').disabled=true;
   try{
+    // A lost in-memory session should not silently leave the old native 403 in place.
+    let previous;
+    try{previous=await api('/api/bridge/status',{key:bridgeKey});}
+    catch(e){
+      if(/истекло|сопряжени|404/i.test(e.message)){
+        bridgeKey=null;sessionStorage.removeItem('groceryBridgeKey');showBridgeCode();
+        $('bridgeState').textContent='Сопряжение истекло после перезапуска сервера. Создай новый код и подключи расширение.';
+        return false;
+      }
+      throw e;
+    }
+    const active=previous.jobs?.some(j=>j.status==='pending'||j.status==='running');
+    if(active){bridgeInProgress=true;await refreshBridge();return true;}
     const providers=['magnit','5ka','perekrestok','vkusvill','kuper','yandex_eda'];
     const d=await api('/api/bridge/queue',{key:bridgeKey,
       providers,items:items.map(i=>({id:i.id,query:i.query,needed:i.needed}))});
-    bridgeInProgress=true;$('bridgeState').textContent='Отправлено '+d.queued+' заданий. Открой расширение и нажми «Проверить задания» либо дождись автоматической проверки.';
-    $('refreshChrome').hidden=false;await refreshBridge();
-  }catch(e){toast(e.message)}finally{$('searchChrome').disabled=false}
-};
+    bridgeInProgress=true;
+    $('bridgeState').textContent='Отправлено '+d.queued+' заданий в Chrome. Открой расширение и нажми «Проверить задания сейчас», если поиск не начинается автоматически.';
+    $('refreshChrome').hidden=false;
+    // Show "Chrome: ожидание" instead of an unrelated stale server-side 403.
+    for(const p of providerStatuses.filter(p=>providers.includes(p.id))){
+      p.status='browser-pending';p.error='';p.offersCount=0;
+    }
+    renderProviderStatus();
+    await refreshBridge();
+    return true;
+  }catch(e){
+    $('bridgeState').textContent='Не удалось запустить поиск через Chrome: '+e.message;
+    if(!automatic)toast(e.message);
+    return false;
+  }finally{$('searchChrome').disabled=false;}
+}
+$('searchChrome').onclick=()=>queueChromeSearch();
 $('refreshChrome').onclick=()=>refreshBridge().catch(e=>toast(e.message));
 async function refreshBridge(){
   if(!bridgeKey || bridgePolling)return;
@@ -135,8 +165,8 @@ async function refreshBridge(){
       const index=providerStatuses.findIndex(p=>p.id===job.providerId);
       if(index>=0){
         const p=providerStatuses[index];
-        if(job.status==='done'){p.status=job.offers.length?'browser-priced':'browser-needs-search';p.offersCount=job.offers.length;p.verifiedDelivery=false;}
-        if(job.status==='pending'||job.status==='running')p.status='browser-pending';
+        if(job.status==='done'){p.status=job.offers.length?'browser-priced':'browser-needs-search';p.offersCount=job.offers.length;p.verifiedDelivery=false;p.error=job.error||'';}
+        if(job.status==='pending'||job.status==='running'){p.status='browser-pending';p.error='';}
         if(job.status==='needs-user'){p.status='browser-needs-search';p.error=job.error||'';p.offersCount=job.offers.length;}
         if(job.status==='error'){p.status='browser-error';p.error=job.error||'';}
       }
