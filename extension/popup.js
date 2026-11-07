@@ -26,3 +26,17 @@ $('manual').onclick=()=>command($('manual'),async()=>{
   const r=await send('MANUAL_CAPTURE',{query:q});return `Считано ${r.offers} цен (${r.providerId})`;
 });
 void refresh();
+
+$('learn').onclick=()=>command($('learn'),async()=>{
+  const query=$('manualQuery').value.trim();
+  const result=await send('LEARN_SEARCH',{query});
+  return `Маршрут поиска для ${result.providerId} сохранён только в Chrome`;
+});
+$('diagnose').onclick=()=>command($('diagnose'),async()=>{
+  const result=await send('DIAGNOSE');
+  const json=JSON.stringify(result.report,null,2);
+  const area=$('diagnosticOutput');
+  area.style.display='block'; area.value=json;area.focus();area.select();
+  try{await navigator.clipboard.writeText(json);return 'Диагностика скопирована — отправьте JSON в чат';}
+  catch{return 'Диагностика выделена: нажмите Ctrl+C и отправьте в чат';}
+});
