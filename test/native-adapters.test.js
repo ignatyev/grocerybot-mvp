@@ -60,3 +60,14 @@ test('search orchestrator includes price-only providers but global verification 
  assert.equal(r.items[0].offers.length,2);assert.equal(r.quotes.length,0);
  assert.equal(r.coverage.completeMarketComparison,false);
 });
+
+test('403 is browser-required and stops repeated requests to a protected store',async()=>{
+ let count=0;
+ const blocked=await searchDirectRetailer('pyaterochka',[item,{...item,id:'i1',query:'хлеб'}],{
+   fetchFn:async()=>{count++;return new Response('Forbidden',{status:403})}
+ });
+ assert.equal(count,1);
+ assert.equal(blocked.status,'browser-required');
+ assert.equal(blocked.offers.length,0);
+ assert.match(blocked.errors[0].message,/403/);
+});
