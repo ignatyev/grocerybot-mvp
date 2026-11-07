@@ -16,7 +16,7 @@ function browserEnvironment(){
     scripting:{executeScript:async x=>{
       if(x.files){stats.injected++;return [{}];}
       const [action]=x.args||[];
-      if(action==='scan')return [{result:{cards:[{name:'Молоко 3,2%, 1 л',priceKopecks:9300,url:'https://vkusvill.ru/goods/moloko-3-173/'}],location:'https://vkusvill.ru/search/?q=...',pageTitle:'Поиск молоко'}}];
+      if(action==='scan')return [{result:{cards:[{name:'Молоко 3,2%, 1 л',priceKopecks:9300,url:'https://vkusvill.ru/goods/moloko-3-173/'}],location:'https://vkusvill.ru/search/?q=%D0%BC%D0%BE%D0%BB%D0%BE%D0%BA%D0%BE',pageTitle:'Поиск молоко'}}];
       if(action==='search')return [{result:{submitted:true,url:'https://magnit.ru'}}];
       return [];
     }}
@@ -59,4 +59,29 @@ test('worker reaches verified milk categories in 5ka and Perekrestok without sea
    ]);
    assert.deepEqual(bridge.status({key}).jobs.map(j=>j.status),['done','done']);
  }finally {globalThis.chrome=origChrome;globalThis.fetch=origFetch;}
+});
+
+test('5ka learned ?text= search drives the extension and yields actual matching offers',async()=>{
+ const originalChrome=globalThis.chrome,originalFetch=globalThis.fetch;
+ try {
+   const {bridge,stats}=browserEnvironment();
+   const baseGet=globalThis.chrome.storage.local.get;
+   globalThis.chrome.storage.local.get=async name=> name==='learnedSearchTemplates'
+     ? {learnedSearchTemplates:{'5ka':'https://5ka.ru/search/?text=__GROCERYBOT_SEARCH_TERM__'}}
+     : baseGet(name);
+   globalThis.chrome.scripting.executeScript=async x=>{
+     if(x.files){stats.injected++;return [{}];}
+     const [action]=x.args||[];
+     if(action==='scan')return [{result:{cards:[{name:'Молоко 3,2%, 1 л',priceKopecks:9500,url:'https://5ka.ru/'}],
+       location:stats.updates.at(-1)||'https://5ka.ru/',queryInSearchInput:true,pageTitle:'Поиск'}}];
+     if(action==='search')return [{result:{submitted:true,url:'https://5ka.ru/'}}];
+     return [];
+   };
+   bridge.enqueue({key,providers:['5ka'],items:[{id:'i0',query:'молоко',needed:{quantity:1000,unit:'мл'}}]});
+   const {pollNow}=await import('../extension/background.js?5ka-learned-test');
+   const result=await pollNow();
+   assert.equal(result.offers,1);
+   assert.equal(bridge.status({key}).jobs[0].status,'done');
+   assert.equal(stats.updates[0],'https://5ka.ru/search/?text=%D0%BC%D0%BE%D0%BB%D0%BE%D0%BA%D0%BE');
+ }finally {globalThis.chrome=originalChrome;globalThis.fetch=originalFetch;}
 });
